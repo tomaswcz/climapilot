@@ -17,21 +17,23 @@ class MideaCloudError(msg: String) : Exception(msg)
 /**
  * EN: Minimal NetHome Plus cloud client. Port of mill1000/midea-msmart cloud.py (NetHomePlusCloud).
  *     Uses the library's bundled default account for the region, so the user never logs in — but it
- *     still needs internet access to mapp.appsmb.com to fetch the per-device token + key. That token
- *     is the ONLY thing fetched online; all actual AC control afterwards is purely local (LAN).
+ *     still needs internet access to mapp.appsmb.com / mapp-eu.appsmb.com to fetch the per-device token + key.
+ *     That token is the ONLY thing fetched online; all actual AC control afterwards is purely local (LAN).
  *
  * DE: Minimaler NetHome-Plus-Cloud-Client. Portierung von mill1000/midea-msmart cloud.py
  *     (NetHomePlusCloud). Nutzt das mitgelieferte Standardkonto der Region, sodass sich der Nutzer
- *     nie anmelden muss — benötigt aber Internetzugang zu mapp.appsmb.com, um Token + Schlüssel pro
- *     Gerät zu holen. Dieses Token ist das EINZIGE, was online geholt wird; die eigentliche
- *     Klima-Steuerung danach läuft rein lokal (LAN).
+ *     nie anmelden muss — benötigt aber Internetzugang zu mapp.appsmb.com / mapp-eu.appsmb.com,
+ *     um Token + Schlüssel pro Gerät zu holen. Dieses Token ist das EINZIGE, was online geholt wird;
+ *     die eigentliche Klima-Steuerung danach läuft rein lokal (LAN).
  */
-class MideaCloud(region: String = "DE") {
-    private val baseUrl = "https://mapp.appsmb.com"
+class MideaCloud(
+    val region: String = "DE",
+    val customBaseUrl: String? = null,
+) {
+    private var baseUrl = customBaseUrl ?: if (region == "DE" || region == "EU") "https://mapp-eu.appsmb.com" else "https://mapp.appsmb.com"
     private val appId = "1017"
     private val appKey = "3742e9e5842d4ad59c2db887e12449f9"
     private val deviceId = randomHex(8)
-
     private val account: String
     private val password: String
     private var loginId: String? = null
@@ -40,6 +42,7 @@ class MideaCloud(region: String = "DE") {
     init {
         val creds = mapOf(
             "DE" to ("nethome+de@mailinator.com" to "password1"),
+            "EU" to ("nethome+de@mailinator.com" to "password1"),
             "KR" to ("nethome+sea@mailinator.com" to "password1"),
             "US" to ("nethome+us@mailinator.com" to "password1"),
         )[region] ?: throw MideaCloudError("Unknown region $region")
@@ -49,17 +52,37 @@ class MideaCloud(region: String = "DE") {
 
     /**
      * EN: Fetch the token + key (hex strings) for a device's udpid (logs in lazily if needed).
+     *     Tries European endpoint (mapp-eu.appsmb.com) and falls back to Global (mapp.appsmb.com) if error 9999 occurs.
      * DE: Token + Schlüssel (Hex-Strings) für die udpid eines Geräts holen (meldet sich bei Bedarf an).
      */
     suspend fun getToken(udpidHex: String): Pair<String, String> = withContext(Dispatchers.IO) {
-        login()
-        val result = apiRequest("/v1/iot/secure/getToken", mapOf("udpid" to udpidHex))
-        val list = result.optJSONArray("tokenlist") ?: throw MideaCloudError("no tokenlist")
-        for (i in 0 until list.length()) {
-            val t = list.getJSONObject(i)
-            if (t.optString("udpId") == udpidHex) return@withContext t.getString("token") to t.getString("key")
+        val servers = if (customBaseUrl != null) {
+            listOf(customBaseUrl)
+        } else if (region == "DE" || region == "EU") {
+            listOf("https://mapp-eu.appsmb.com", "https://mapp.appsmb.com")
+        } else {
+            listOf("https://mapp.appsmb.com", "https://mapp-eu.appsmb.com")
         }
-        throw MideaCloudError("no token/key for udpid")
+
+        var lastError: Exception? = null
+        for (server in servers) {
+            try {
+                baseUrl = server
+                sessionId = ""
+                loginId = null
+                login()
+                val result = apiRequest("/v1/iot/secure/getToken", mapOf("udpid" to udpidHex))
+                val list = result.optJSONArray("tokenlist") ?: throw MideaCloudError("no tokenlist")
+                for (i in 0 until list.length()) {
+                    val t = list.getJSONObject(i)
+                    if (t.optString("udpId") == udpidHex) return@withContext t.getString("token") to t.getString("key")
+                }
+                throw MideaCloudError("no token/key for udpid on $server")
+            } catch (e: Exception) {
+                lastError = e
+            }
+        }
+        throw lastError ?: MideaCloudError("Failed to fetch token/key for udpid from all endpoints")
     }
 
     /**
@@ -103,19 +126,23 @@ class MideaCloud(region: String = "DE") {
             readTimeout = 10000
             doOutput = true
         }
+
         val form = body.entries.joinToString("&") {
             URLEncoder.encode(it.key, "UTF-8") + "=" + URLEncoder.encode(it.value, "UTF-8")
         }
         conn.outputStream.use { it.write(form.toByteArray()) }
+
         val code = conn.responseCode
         val text = (if (code in 200..299) conn.inputStream else conn.errorStream)
             ?.bufferedReader()?.use { it.readText() } ?: ""
         conn.disconnect()
+
         if (code !in 200..299) throw MideaCloudError("HTTP $code: $text")
 
         val json = JSONObject(text)
         if (json.optString("errorCode", "0") != "0")
             throw MideaCloudError("API ${json.optString("errorCode")}: ${json.optString("msg")}")
+
         return json.getJSONObject("result")
     }
 

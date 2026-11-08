@@ -1,0 +1,71 @@
+name: Build ClimaPilot Android & Wear OS APK
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+  workflow_dispatch:
+    inputs:
+      build_target:
+        description: 'Co sestavit'
+        required: true
+        default: 'app'
+        type: choice
+        options:
+          - app
+          - wear
+          - both
+
+jobs:
+  build:
+    name: Sestavení ClimaPilot APK
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Nastavení Java 17 (Temurin)
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Nastavení Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          packages: ''
+
+      - name: Instalace Android SDK 36.1 balíčků
+        run: |
+          sdkmanager "platforms;android-36" "platforms;android-36.1" "build-tools;36.0.0"
+
+      - name: Práva pro spuštění gradlew
+        run: chmod +x gradlew
+
+      - name: Sestavení mobilní aplikace (Phone APK)
+        if: ${{ inputs.build_target == 'app' || inputs.build_target == 'both' || github.event_name != 'workflow_dispatch' }}
+        run: bash ./gradlew :app:assembleDebug --no-daemon
+
+      - name: Sestavení aplikace pro hodinky (Wear OS APK)
+        if: ${{ inputs.build_target == 'wear' || inputs.build_target == 'both' }}
+        run: bash ./gradlew :wear:assembleDebug --no-daemon
+
+      - name: Nahrát Phone APK artefakt
+        if: ${{ inputs.build_target == 'app' || inputs.build_target == 'both' || github.event_name != 'workflow_dispatch' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: ClimaPilot-Phone-APK
+          path: app/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
+
+      - name: Nahrát Wear OS APK artefakt
+        if: ${{ inputs.build_target == 'wear' || inputs.build_target == 'both' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: ClimaPilot-Wear-APK
+          path: wear/build/outputs/apk/debug/*.apk
+          if-no-files-found: error

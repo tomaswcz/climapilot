@@ -572,8 +572,9 @@ class MideaAcSession(
     // EN: Invoked with a freshly fetched (token, key) so the caller can persist it for next time.
     // DE: Wird mit einem frisch geholten (Token, Key) aufgerufen, damit der Aufrufer es für das nächste Mal speichern kann.
     private val onCredsFetched: ((token: String, key: String) -> Unit)? = null,
+    customServer: String? = null,
 ) {
-    private val cloud = MideaCloud(region)
+    private val cloud = MideaCloud(region, customBaseUrl = customServer)
     private val lan = MideaLan(device.ip, device.port, device.id)
     private var token: String? = null
     private var key: String? = null
